@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Ellectra — Power Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;500;600&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box;}
+  :root{
+    --accent:#00f5c4;--accent2:#7b61ff;--danger:#ff4d6d;--warn:#ffd166;
+    --glass:rgba(10,12,20,0.72);--glass-border:rgba(0,245,196,0.18);
+    --text:#e8f4f8;--sub:#8baabb;
+  }
+  body{font-family:'Inter',sans-serif;background:#000;color:var(--text);overflow-x:hidden;min-height:100vh;}
+  #bg-video{position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:0;opacity:0.38;pointer-events:none;}
+  .bg-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:linear-gradient(135deg,rgba(0,0,0,0.7) 0%,rgba(5,10,25,0.6) 100%);z-index:1;pointer-events:none;}
+  .app{position:relative;z-index:2;min-height:100vh;display:flex;flex-direction:column;}
+
+  /* Header */
+  header{display:flex;align-items:center;justify-content:space-between;padding:18px 36px;background:rgba(5,8,20,0.85);backdrop-filter:blur(18px);border-bottom:1px solid var(--glass-border);}
+  .logo-wrap img{height:48px;filter:drop-shadow(0 0 10px rgba(0,245,196,0.5));}
+  .brand-text{margin-left:14px;}
+  .brand-text h1{font-family:'Orbitron',monospace;font-size:1.25rem;font-weight:900;color:var(--accent);letter-spacing:2px;}
+  .brand-text p{font-size:0.7rem;color:var(--sub);letter-spacing:3px;text-transform:uppercase;margin-top:2px;}
+  .header-left{display:flex;align-items:center;}
+  .nav-links{display:flex;gap:8px;}
+  .nav-links a{padding:8px 18px;border-radius:6px;font-size:0.8rem;font-weight:500;text-decoration:none;letter-spacing:1px;text-transform:uppercase;transition:all 0.2s;}
+  .nav-links a.active{background:var(--accent);color:#000;}
+  .nav-links a:not(.active){color:var(--sub);border:1px solid var(--glass-border);}
+  .nav-links a:not(.active):hover{border-color:var(--accent);color:var(--accent);}
+
+  /* Connection bar */
+  .conn-bar{display:flex;align-items:center;gap:8px;padding:6px 36px;background:rgba(0,0,0,0.5);font-size:0.72rem;color:var(--sub);}
+  .dot{width:8px;height:8px;border-radius:50%;background:#555;transition:background 0.4s;}
+  .dot.on{background:var(--accent);box-shadow:0 0 8px var(--accent);}
+  .dot.err{background:var(--danger);}
+
+  main{flex:1;padding:28px 36px;display:flex;flex-direction:column;gap:24px;}
+
+  /* Metrics */
+  .metrics-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
+  .metric-card{padding:24px 20px;border-radius:14px;background:var(--glass);border:1px solid var(--glass-border);backdrop-filter:blur(16px);position:relative;overflow:hidden;transition:border-color 0.3s;}
+  .metric-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:14px 14px 0 0;}
+  .mc-v::before{background:linear-gradient(90deg,var(--accent),transparent);}
+  .mc-a::before{background:linear-gradient(90deg,var(--accent2),transparent);}
+  .mc-p::before{background:linear-gradient(90deg,var(--warn),transparent);}
+  .mc-e::before{background:linear-gradient(90deg,var(--danger),transparent);}
+  .mc-f::before{background:linear-gradient(90deg,#4caf50,transparent);}
+  .mc-pf::before{background:linear-gradient(90deg,#ff8c00,transparent);}
+  .mc-total::before{background:linear-gradient(90deg,#00f5c4,transparent);}
+  .mc-3d::before{background:linear-gradient(90deg,#ff8c00,transparent);}
+  .metric-label{font-size:0.65rem;text-transform:uppercase;letter-spacing:2px;color:var(--sub);margin-bottom:10px;}
+  .metric-val{font-family:'Orbitron',monospace;font-size:2.4rem;font-weight:700;line-height:1;}
+  .metric-unit{font-size:0.75rem;color:var(--sub);margin-top:6px;}
+  .mc-v .metric-val{color:var(--accent);}
+  .mc-a .metric-val{color:var(--accent2);}
+  .mc-p .metric-val{color:var(--warn);}
+  .mc-e .metric-val{color:var(--danger);}
+  .mc-f .metric-val{color:#4caf50;}
+  .mc-pf .metric-val{color:#ff8c00;}
+
+  /* Extra metrics row */
+  .metrics-row-2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;}
+
+  /* Middle row */
+  .mid-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  .chart-card{padding:22px;border-radius:14px;background:var(--glass);border:1px solid var(--glass-border);backdrop-filter:blur(16px);}
+  .chart-card h3{font-family:'Orbitron',monospace;font-size:0.75rem;letter-spacing:2px;color:var(--sub);text-transform:uppercase;margin-bottom:16px;}
+  canvas{width:100%!important;max-height:200px;}
+
+  /* Relay controls */
+  .relay-card{padding:22px;border-radius:14px;background:var(--glass);border:1px solid var(--glass-border);backdrop-filter:blur(16px);}
+  .relay-card h3{font-family:'Orbitron',monospace;font-size:0.75rem;letter-spacing:2px;color:var(--sub);text-transform:uppercase;margin-bottom:18px;}
+  .relay-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .relay-item{background:rgba(0,0,0,0.4);border-radius:10px;padding:16px;border:1px solid rgba(255,255,255,0.06);}
+  .relay-item .r-label{font-size:0.7rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--sub);margin-bottom:4px;}
+  .relay-item .r-name{font-size:0.9rem;font-weight:600;margin-bottom:14px;}
+  .toggle-wrap{display:flex;align-items:center;gap:12px;}
+  .toggle{position:relative;width:52px;height:28px;cursor:pointer;}
+  .toggle input{opacity:0;width:0;height:0;}
+  .slider{position:absolute;top:0;left:0;right:0;bottom:0;background:#1a1f2e;border-radius:28px;border:1px solid rgba(255,255,255,0.1);transition:0.3s;}
+  .slider:before{content:'';position:absolute;height:20px;width:20px;left:3px;bottom:3px;background:#555;border-radius:50%;transition:0.3s;}
+  input:checked+.slider{background:rgba(0,245,196,0.2);border-color:var(--accent);}
+  input:checked+.slider:before{transform:translateX(24px);background:var(--accent);box-shadow:0 0 8px var(--accent);}
+  .status-badge{font-size:0.68rem;font-weight:600;padding:2px 10px;border-radius:20px;background:rgba(255,255,255,0.05);color:#555;transition:all 0.3s;}
+  .status-badge.on{background:rgba(0,245,196,0.15);color:var(--accent);}
+  .relay-fb{margin-top:8px;font-size:0.65rem;color:var(--sub);display:flex;align-items:center;gap:5px;}
+  .fb-dot{width:6px;height:6px;border-radius:50%;background:#333;}
+  .fb-dot.active{background:var(--accent);box-shadow:0 0 5px var(--accent);}
+
+  /* 3D session bar */
+  .session-bar{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center;padding:18px 22px;border-radius:14px;background:var(--glass);border:1px solid var(--glass-border);backdrop-filter:blur(16px);}
+  .session-info h3{font-family:'Orbitron',monospace;font-size:0.8rem;letter-spacing:2px;color:var(--sub);text-transform:uppercase;margin-bottom:6px;}
+  .session-info p{font-size:0.8rem;color:var(--sub);}
+  .session-info span{color:var(--accent);font-weight:600;}
+  .session-bar.printing{border-color:#ff8c00;background:rgba(255,140,0,0.06);}
+
+  .btn{padding:12px 28px;border-radius:8px;font-family:'Orbitron',monospace;font-size:0.72rem;letter-spacing:1.5px;text-transform:uppercase;font-weight:700;cursor:pointer;border:none;transition:all 0.2s;}
+  .btn-primary{background:var(--accent);color:#000;}
+  .btn-primary:hover{background:#00d4aa;box-shadow:0 0 18px rgba(0,245,196,0.4);}
+  .btn-secondary{background:transparent;color:var(--sub);border:1px solid var(--glass-border);}
+  .btn-secondary:hover{border-color:var(--accent2);color:var(--accent2);}
+  .btn-danger{background:var(--danger);color:#fff;}
+  .btn-danger:hover{background:#e03055;}
+
+  /* ESP status bar */
+  .esp-bar{display:flex;gap:18px;padding:10px 22px;border-radius:10px;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.05);font-size:0.72rem;align-items:center;flex-wrap:wrap;}
+  .esp-chip{display:flex;align-items:center;gap:6px;color:var(--sub);}
+  .esp-chip span{color:var(--text);}
+
+  footer{padding:14px 36px;background:rgba(5,8,20,0.85);border-top:1px solid var(--glass-border);display:flex;justify-content:space-between;align-items:center;font-size:0.68rem;color:var(--sub);}
+
+  @media(max-width:1100px){
+    .metrics-row{grid-template-columns:1fr 1fr;}
+    .mid-row{grid-template-columns:1fr;}
+    header{padding:14px 18px;}
+    main{padding:18px;}
+    .metric-val{font-size:1.8rem;}
+    .session-bar{grid-template-columns:1fr;}
+  }
+  @media(max-width:900px){
+    .metrics-row{grid-template-columns:1fr 1fr;}
+    .mid-row{grid-template-columns:1fr;}
+    main{padding:14px;}
+  }
+</style>
+</head>
+<body>
+<video id="bg-video" autoplay muted loop playsinline>
+  <source src="https://raw.githubusercontent.com/projectcentreai-ux/Ellectra-projects/main/47215-450995786.mp4" type="video/mp4"/>
+</video>
+<div class="bg-overlay"></div>
+
+<div class="app">
+  <header>
+    <div class="header-left">
+      <div class="logo-wrap">
+        <img src="https://raw.githubusercontent.com/projectcentreai-ux/Ellectra-projects/main/Ellectra_w01wap%20(2)%20(1)%20logo.png" alt="Ellectra Logo" onerror="this.style.display='none'"/>
+      </div>
+      <div class="brand-text">
+        <h1>Ellectra</h1>
+        <p>Power Intelligence</p>
+      </div>
+    </div>
+    <nav class="nav-links">
+      <a href="index.html" class="active">Dashboard</a>
+      <a href="stat.html">Statistics</a>
+      <a href="3dprinter.html">3D Printer</a>
+    </nav>
+  </header>
+
+  <div class="conn-bar">
+    <div class="dot" id="mqtt-dot"></div>
+    <span id="mqtt-status">Connecting to MQTT broker…</span>
+    <span style="margin-left:auto;font-family:'Orbitron',monospace;font-size:0.7rem;" id="clock"></span>
+  </div>
+
+  <main>
+    <!-- Primary metrics: V, A, W, Wh -->
+    <div class="metrics-row">
+      <div class="metric-card mc-v">
+        <div class="metric-label">Voltage</div>
+        <div class="metric-val" id="val-voltage">—</div>
+        <div class="metric-unit">Volts (V)</div>
+      </div>
+      <div class="metric-card mc-a">
+        <div class="metric-label">Current</div>
+        <div class="metric-val" id="val-current">—</div>
+        <div class="metric-unit">Amperes (A)</div>
+      </div>
+      <div class="metric-card mc-p">
+        <div class="metric-label">Power</div>
+        <div class="metric-val" id="val-power">—</div>
+        <div class="metric-unit">Watts (W)</div>
+      </div>
+      <div class="metric-card mc-e">
+        <div class="metric-label">Energy (PZEM)</div>
+        <div class="metric-val" id="val-energy">—</div>
+        <div class="metric-unit">Wh consumed</div>
+      </div>
+    </div>
+
+    <!-- Secondary metrics: Freq, PF, Total Energy, 3D Print Energy -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:16px;">
+      <div class="metric-card mc-f">
+        <div class="metric-label">Frequency</div>
+        <div class="metric-val" style="font-size:1.8rem;" id="val-freq">—</div>
+        <div class="metric-unit">Hertz (Hz)</div>
+      </div>
+      <div class="metric-card mc-pf">
+        <div class="metric-label">Power Factor</div>
+        <div class="metric-val" style="font-size:1.8rem;" id="val-pf">—</div>
+        <div class="metric-unit">cos φ (0–1)</div>
+      </div>
+      <div class="metric-card mc-total">
+        <div class="metric-label">Total Consumed</div>
+        <div class="metric-val" style="font-size:1.8rem;color:#00f5c4;" id="val-total-wh">0.00</div>
+        <div class="metric-unit">Wh (all readings)</div>
+      </div>
+      <div class="metric-card mc-total">
+        <div class="metric-label">Total Consumed</div>
+        <div class="metric-val" style="font-size:1.8rem;color:#4caf50;" id="val-total-kwh">0.000</div>
+        <div class="metric-unit">kWh</div>
+      </div>
+      <div class="metric-card mc-3d">
+        <div class="metric-label">🖨 3D Print Energy</div>
+        <div class="metric-val" style="font-size:1.8rem;color:#ff8c00;" id="val-3d-wh">0.00</div>
+        <div class="metric-unit">Wh (all sessions)</div>
+      </div>
+      <!-- ESP32 device status -->
+      <div class="metric-card" style="grid-column:span 1;">
+        <div class="metric-label">ESP32 Status</div>
+        <div class="esp-bar" style="background:transparent;border:none;padding:0;margin-top:4px;flex-direction:column;align-items:flex-start;gap:4px;">
+          <div class="esp-chip">🌐 WiFi <span id="esp-wifi">—</span></div>
+          <div class="esp-chip">📡 MQTT <span id="esp-mqtt-status">—</span></div>
+          <div class="esp-chip">🖨 Print <span id="esp-print">IDLE</span></div>
+          <div class="esp-chip">⏱ Last seen <span id="esp-last">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chart + Relay row -->
+    <div class="mid-row">
+      <div class="chart-card">
+        <h3>Live Power Trend</h3>
+        <canvas id="powerChart" height="200"></canvas>
+      </div>
+      <div class="relay-card">
+        <h3>Relay Controls</h3>
+        <div class="relay-grid">
+          <!-- Relay 1 — GPIO 12 -->
+          <div class="relay-item">
+            <div class="r-label">Channel 1 · GPIO 12</div>
+            <div class="r-name">Main Load</div>
+            <div class="toggle-wrap">
+              <label class="toggle">
+                <input type="checkbox" id="relay1-toggle" onchange="toggleRelay(1,this.checked)"/>
+                <span class="slider"></span>
+              </label>
+              <span class="status-badge" id="r1-badge">OFF</span>
+            </div>
+            <div class="relay-fb">
+              <div class="fb-dot" id="fb1-dot"></div>
+              <span id="fb1-text">Feedback GPIO 19: —</span>
+            </div>
+          </div>
+          <!-- Relay 2 — GPIO 27 / 3D Printer -->
+          <div class="relay-item">
+            <div class="r-label">Channel 2 · GPIO 27</div>
+            <div class="r-name">3D Printer</div>
+            <div class="toggle-wrap">
+              <label class="toggle">
+                <input type="checkbox" id="relay2-toggle" onchange="toggleRelay(2,this.checked)"/>
+                <span class="slider"></span>
+              </label>
+              <span class="status-badge" id="r2-badge">OFF</span>
+            </div>
+            <div class="relay-fb">
+              <div class="fb-dot" id="fb2-dot"></div>
+              <span id="fb2-text">Feedback GPIO 23: —</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3D Printer session strip -->
+    <div class="session-bar" id="session-bar">
+      <div class="session-info">
+        <h3>3D Printer Session</h3>
+        <p>Status: <span id="print-status">Idle — waiting for button (GPIO 18)</span></p>
+        <p style="margin-top:6px;">
+          Session energy: <span id="session-energy">0.000</span> Wh &nbsp;|&nbsp;
+          Duration: <span id="session-dur">00:00:00</span> &nbsp;|&nbsp;
+          Avg: <span id="session-avgw">—</span> W &nbsp;|&nbsp;
+          Peak: <span id="session-peakw">—</span> W
+        </p>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary" onclick="window.location='3dprinter.html'">View 3D Stats</button>
+        <button class="btn btn-secondary" onclick="window.location='stat.html'">All Statistics</button>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <span>Ellectra Power Intelligence &copy; 2025 · omroboticsautomation</span>
+    <span id="broker-info">Broker: na45ffa4.ala.asia-southeast1.emqxsl.com:8084 (WSS/TLS)</span>
+  </footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+<script>
+// ═══════════════════════════════════════════════════
+//  CONFIG — matches ESP32 sketch exactly
+// ═══════════════════════════════════════════════════
+const BROKER    = 'wss://na45ffa4.ala.asia-southeast1.emqxsl.com:8084/mqtt'; // TLS WebSocket
+const USERNAME  = 'Omroboticsautomation';
+const PASSWORD  = '12345678';  // matches MQTT_PASS in ESP32
+const CLIENT_ID = 'ellectra-web-' + Math.random().toString(16).substr(2,8);
+
+const TOPICS = {
+  DATA     : 'autoforshop/pzem/data',
+  VOLTAGE  : 'autoforshop/pzem/voltage',
+  CURRENT  : 'autoforshop/pzem/current',
+  POWER    : 'autoforshop/pzem/power',
+  ENERGY   : 'autoforshop/pzem/energy',
+  RELAY1   : 'autoforshop/relay/1',
+  RELAY2   : 'autoforshop/relay/2',
+  FB1      : 'autoforshop/feedback/1',
+  FB2      : 'autoforshop/feedback/2',
+  PRINT    : 'autoforshop/3dprinter/status',
+  STATUS   : 'autoforshop/esp32/status',
+  ALL      : 'autoforshop/#'
+};
+
+// ═══════════════════════════════════════════════════
+//  MQTT
+// ═══════════════════════════════════════════════════
+let mqttClient;
+
+function connectMQTT() {
+  mqttClient = mqtt.connect(BROKER, {
+    clientId: CLIENT_ID,
+    username: USERNAME,
+    password: PASSWORD,
+    clean: true,
+    reconnectPeriod: 4000,
+    connectTimeout: 12000
+  });
+
+  mqttClient.on('connect', () => {
+    document.getElementById('mqtt-dot').className = 'dot on';
+    document.getElementById('mqtt-status').textContent = 'Connected · ' + BROKER;
+    mqttClient.subscribe(TOPICS.ALL);
+  });
+  mqttClient.on('error', e => {
+    document.getElementById('mqtt-dot').className = 'dot err';
+    document.getElementById('mqtt-status').textContent = 'Error: ' + e.message;
+  });
+  mqttClient.on('offline', () => {
+    document.getElementById('mqtt-dot').className = 'dot';
+    document.getElementById('mqtt-status').textContent = 'Reconnecting…';
+  });
+  mqttClient.on('message', (topic, payload) => handleMessage(topic, payload.toString()));
+}
+connectMQTT();
+
+// ═══════════════════════════════════════════════════
+//  MESSAGE HANDLER
+// ═══════════════════════════════════════════════════
+let printActive = false, printStart = null;
+
+function handleMessage(topic, msg) {
+  // JSON data packet (primary source — includes all fields)
+  if (topic === TOPICS.DATA) {
+    try {
+      const d = JSON.parse(msg);
+      if (d.voltage !== undefined) applyData(d);
+    } catch(e) {}
+    return;
+  }
+  // Individual topics (fallback)
+  if (topic === TOPICS.VOLTAGE) setEl('val-voltage', parseFloat(msg).toFixed(1));
+  if (topic === TOPICS.CURRENT) setEl('val-current', parseFloat(msg).toFixed(3));
+  if (topic === TOPICS.POWER)   { const p = parseFloat(msg); setEl('val-power', p.toFixed(1)); pushChart(p); }
+  if (topic === TOPICS.ENERGY)  setEl('val-energy',  parseFloat(msg).toFixed(2));
+
+  // Feedback pins
+  if (topic === TOPICS.FB1) updateFB(1, isTruthy(msg));
+  if (topic === TOPICS.FB2) updateFB(2, isTruthy(msg));
+
+  // 3D printer status from GPIO 18 button
+  if (topic === TOPICS.PRINT) {
+    const printing = msg.trim().toLowerCase() === 'printing';
+    handlePrintStatus(printing);
+  }
+
+  // ESP32 online/offline (LWT)
+  if (topic === TOPICS.STATUS) {
+    setEl('esp-mqtt-status', msg === 'online' ? '✅ Online' : '⚠️ ' + msg);
+    setEl('esp-last', new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata',hour12:false}));
+  }
+}
+
+function applyData(d) {
+  if (d.voltage !== undefined) setEl('val-voltage', parseFloat(d.voltage).toFixed(1));
+  if (d.current !== undefined) setEl('val-current', parseFloat(d.current).toFixed(3));
+  if (d.power   !== undefined) { const p = parseFloat(d.power); setEl('val-power', p.toFixed(1)); pushChart(p); }
+  if (d.energy  !== undefined) setEl('val-energy',  parseFloat(d.energy).toFixed(2));
+  if (d.freq    !== undefined) setEl('val-freq',    parseFloat(d.freq).toFixed(1));
+  if (d.pf      !== undefined) setEl('val-pf',      parseFloat(d.pf).toFixed(2));
+
+  // Session data from ESP32 JSON
+  if (d.printing !== undefined) handlePrintStatus(d.printing === true || d.printing === 'true');
+  if (d.sess_avg_w  !== undefined) setEl('session-avgw',  parseFloat(d.sess_avg_w).toFixed(1));
+  if (d.sess_peak_w !== undefined) setEl('session-peakw', parseFloat(d.sess_peak_w).toFixed(1));
+  if (d.sess_wh     !== undefined) setEl('session-energy', parseFloat(d.sess_wh).toFixed(3));
+  if (d.sess_sec    !== undefined) {
+    const sec = parseInt(d.sess_sec);
+    setEl('session-dur',
+      String(Math.floor(sec/3600)).padStart(2,'0') + ':' +
+      String(Math.floor((sec%3600)/60)).padStart(2,'0') + ':' +
+      String(sec%60).padStart(2,'0'));
+  }
+
+  setEl('esp-last', new Date().toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour12:false}));
+  storeReading(d);
+}
+
+function handlePrintStatus(printing) {
+  if (printing && !printActive) {
+    printActive = true;
+    printStart = Date.now();
+  }
+  if (!printing && printActive) {
+    printActive = false;
+    printStart = null;
+    setEl('session-dur', '00:00:00');
+    setEl('session-energy', '0.000');
+  }
+  setEl('print-status', printing ? '🖨 Printing in progress…' : 'Idle — waiting for button press (GPIO 18)');
+  setEl('esp-print', printing ? 'PRINTING' : 'IDLE');
+  document.getElementById('session-bar').className = 'session-bar' + (printing ? ' printing' : '');
+}
+
+// ═══════════════════════════════════════════════════
+//  RELAY CONTROL (retain:true, QoS 1 — matches ESP32 subscribe)
+// ═══════════════════════════════════════════════════
+function toggleRelay(ch, state) {
+  const topic = ch === 1 ? TOPICS.RELAY1 : TOPICS.RELAY2;
+  // ESP32 expects "1"/"0" or "ON"/"OFF"
+  const payload = state ? '1' : '0';
+  if (mqttClient && mqttClient.connected) {
+    mqttClient.publish(topic, payload, { qos: 1, retain: true });
+  }
+  const badge = document.getElementById('r'+ch+'-badge');
+  badge.textContent = state ? 'ON' : 'OFF';
+  badge.className = 'status-badge' + (state ? ' on' : '');
+}
+
+function updateFB(ch, state) {
+  document.getElementById('fb'+ch+'-dot').className = 'fb-dot' + (state ? ' active' : '');
+  document.getElementById('fb'+ch+'-text').textContent =
+    'Feedback GPIO ' + (ch===1?'19':'23') + ': ' + (state ? 'HIGH' : 'LOW');
+}
+
+// ═══════════════════════════════════════════════════
+//  LIVE CHART
+// ═══════════════════════════════════════════════════
+const MAX_POINTS = 30;
+const chartData = {
+  labels: [],
+  datasets: [{
+    label:'Power (W)', data:[],
+    borderColor:'#ffd166', backgroundColor:'rgba(255,209,102,0.08)',
+    tension:0.4, fill:true, pointRadius:2, borderWidth:2
+  }]
+};
+const powerChart = new Chart(document.getElementById('powerChart'), {
+  type:'line', data:chartData,
+  options:{
+    animation:false, responsive:true, maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      x:{ticks:{color:'#8baabb',font:{size:9}}, grid:{color:'rgba(255,255,255,0.04)'}},
+      y:{ticks:{color:'#8baabb',font:{size:9}}, grid:{color:'rgba(255,255,255,0.06)'}, beginAtZero:true}
+    }
+  }
+});
+
+function pushChart(val) {
+  const now = new Date().toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  chartData.labels.push(now);
+  chartData.datasets[0].data.push(val);
+  if (chartData.labels.length > MAX_POINTS) { chartData.labels.shift(); chartData.datasets[0].data.shift(); }
+  powerChart.update();
+}
+
+// ═══════════════════════════════════════════════════
+//  LOCAL STORAGE (for stat.html)
+// ═══════════════════════════════════════════════════
+function storeReading(d) {
+  try {
+    const readings = JSON.parse(localStorage.getItem('ellectra_readings') || '[]');
+    readings.push({ ts: Date.now(), ...d });
+    if (readings.length > 2000) readings.splice(0, readings.length - 2000);
+    localStorage.setItem('ellectra_readings', JSON.stringify(readings));
+  } catch(e) {}
+  updateEnergyTotals();
+}
+
+function updateEnergyTotals() {
+  try {
+    const readings = JSON.parse(localStorage.getItem('ellectra_readings') || '[]');
+    const powers   = readings.map(r => parseFloat(r.power) || 0);
+    const totalWh  = powers.reduce((a, v, i) => {
+      if (i === 0) return a;
+      const dt = (readings[i].ts - readings[i-1].ts) / 3600000;
+      return a + v * dt;
+    }, 0);
+    setEl('val-total-wh',  totalWh.toFixed(2));
+    setEl('val-total-kwh', (totalWh / 1000).toFixed(3));
+  } catch(e) {}
+  try {
+    const sessions3d = JSON.parse(localStorage.getItem('ellectra_3d_sessions') || '[]');
+    const print3dWh  = sessions3d.reduce((a, s) => a + (parseFloat(s.energy) || 0), 0);
+    setEl('val-3d-wh', print3dWh.toFixed(2));
+  } catch(e) {}
+}
+
+// Run once on load so stored data shows immediately
+updateEnergyTotals();
+
+// ═══════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════
+function setEl(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+function isTruthy(msg) {
+  const m = msg.trim().toLowerCase();
+  return m === '1' || m === 'on' || m === 'true';
+}
+
+// Clock
+function updateClock() {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleString('en-IN',{timeZone:'Asia/Kolkata',hour12:false});
+}
+updateClock(); setInterval(updateClock, 1000);
+</script>
+</body>
+</html>
