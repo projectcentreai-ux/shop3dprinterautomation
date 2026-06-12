@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Ellectra — 3D Printer Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;500;600&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box;}
+  :root{
+    --accent:#00f5c4;--accent2:#7b61ff;--danger:#ff4d6d;--warn:#ffd166;--print:#ff8c00;
+    --glass:rgba(10,12,20,0.82);--glass-border:rgba(0,245,196,0.15);
+    --text:#e8f4f8;--sub:#8baabb;
+  }
+  body{font-family:'Inter',sans-serif;background:#05080f;color:var(--text);min-height:100vh;}
+  #bg-video{position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:0;opacity:0.22;pointer-events:none;}
+  .bg-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(5,8,20,0.8);z-index:1;pointer-events:none;}
+  .app{position:relative;z-index:2;min-height:100vh;display:flex;flex-direction:column;}
+
+  header{display:flex;align-items:center;justify-content:space-between;padding:18px 36px;background:rgba(5,8,20,0.9);backdrop-filter:blur(18px);border-bottom:1px solid var(--glass-border);}
+  .logo-wrap img{height:44px;filter:drop-shadow(0 0 8px rgba(0,245,196,0.4));}
+  .header-left{display:flex;align-items:center;gap:14px;}
+  .brand-text h1{font-family:'Orbitron',monospace;font-size:1.15rem;font-weight:900;color:var(--accent);letter-spacing:2px;}
+  .brand-text p{font-size:0.65rem;color:var(--sub);letter-spacing:3px;text-transform:uppercase;}
+  .nav-links{display:flex;gap:8px;}
+  .nav-links a{padding:8px 18px;border-radius:6px;font-size:0.78rem;font-weight:500;text-decoration:none;letter-spacing:1px;text-transform:uppercase;transition:all 0.2s;}
+  .nav-links a.active{background:var(--accent);color:#000;}
+  .nav-links a:not(.active){color:var(--sub);border:1px solid var(--glass-border);}
+  .nav-links a:not(.active):hover{border-color:var(--accent);color:var(--accent);}
+
+  .conn-bar{display:flex;align-items:center;gap:8px;padding:6px 36px;background:rgba(0,0,0,0.5);font-size:0.72rem;color:var(--sub);}
+  .dot{width:8px;height:8px;border-radius:50%;background:#555;transition:background 0.4s;}
+  .dot.on{background:var(--accent);box-shadow:0 0 8px var(--accent);}
+  .dot.err{background:var(--danger);}
+
+  main{flex:1;padding:28px 36px;display:flex;flex-direction:column;gap:22px;}
+  .page-title{font-family:'Orbitron',monospace;font-size:1.4rem;font-weight:900;letter-spacing:3px;}
+  .page-title span{color:var(--print);}
+
+  /* Status banner */
+  .status-banner{padding:20px 28px;border-radius:14px;display:flex;align-items:center;justify-content:space-between;border:2px solid var(--glass-border);backdrop-filter:blur(16px);transition:all 0.4s;}
+  .status-banner.idle{background:rgba(10,12,20,0.8);border-color:rgba(255,255,255,0.08);}
+  .status-banner.printing{background:rgba(255,140,0,0.08);border-color:var(--print);animation:pulseBorder 2s ease-in-out infinite;}
+  @keyframes pulseBorder{0%,100%{box-shadow:0 0 0 rgba(255,140,0,0);}50%{box-shadow:0 0 20px rgba(255,140,0,0.25);}}
+  .status-left h2{font-family:'Orbitron',monospace;font-size:1rem;letter-spacing:2px;margin-bottom:6px;}
+  .status-left p{font-size:0.8rem;color:var(--sub);}
+  .print-icon{font-size:2.5rem;opacity:0.8;}
+  .printing-anim{animation:printPulse 1.5s ease-in-out infinite;}
+  @keyframes printPulse{0%,100%{opacity:0.5;}50%{opacity:1;}}
+
+  /* Metrics */
+  .metrics-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
+  .metric-card{padding:22px 18px;border-radius:12px;background:var(--glass);border:1px solid var(--glass-border);backdrop-filter:blur(16px);}
+  .metric-label{font-size:0.62rem;text-transform:uppercase;letter-spacing:2px;color:var(--sub);margin-bottom:8px;}
+  .metric-val{font-family:'Orbitron',monospace;font-size:2rem;font-weight:700;line-height:1;}
+  .metric-unit{font-size:0.7rem;color:var(--sub);margin-top:5px;}
+
+  /* Session stats row */
+  .session-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+
+  /* Charts */
+  .charts-row{display:grid;grid-template-columns:2fr 1fr;gap:16px;}
+  .card{background:var(--glass);border:1px solid var(--glass-border);border-radius:14px;backdrop-filter:blur(16px);padding:22px;}
+  .card h3{font-family:'Orbitron',monospace;font-size:0.7rem;letter-spacing:2px;color:var(--sub);text-transform:uppercase;margin-bottom:16px;}
+
+  /* History table */
+  .hist-table{width:100%;border-collapse:collapse;font-size:0.78rem;}
+  .hist-table th{padding:10px 14px;font-size:0.62rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--sub);border-bottom:1px solid var(--glass-border);text-align:left;}
+  .hist-table td{padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.04);}
+  .hist-table tr:hover td{background:rgba(255,140,0,0.04);}
+
+  .btn{padding:10px 22px;border-radius:7px;font-family:'Orbitron',monospace;font-size:0.68rem;letter-spacing:1.5px;text-transform:uppercase;font-weight:700;cursor:pointer;border:none;transition:all 0.2s;}
+  .btn-print{background:var(--print);color:#fff;}
+  .btn-print:hover{box-shadow:0 0 14px rgba(255,140,0,0.4);}
+  .btn-stop{background:var(--danger);color:#fff;}
+  .btn-stop:hover{box-shadow:0 0 14px rgba(255,77,109,0.4);}
+  .btn-outline{background:transparent;color:var(--sub);border:1px solid var(--glass-border);}
+  .btn-outline:hover{border-color:var(--accent);color:var(--accent);}
+
+  .timer-big{font-family:'Orbitron',monospace;font-size:3rem;font-weight:900;color:var(--print);letter-spacing:4px;text-align:center;padding:20px 0;}
+  .timer-big.idle{color:#333;}
+
+  /* Source badge */
+  .source-badge{display:inline-flex;align-items:center;gap:6px;font-size:0.65rem;padding:3px 10px;border-radius:20px;background:rgba(0,245,196,0.1);color:var(--accent);border:1px solid rgba(0,245,196,0.25);}
+
+  footer{padding:14px 36px;background:rgba(5,8,20,0.9);border-top:1px solid var(--glass-border);display:flex;justify-content:space-between;font-size:0.68rem;color:var(--sub);}
+  @media(max-width:900px){.metrics-row,.session-grid,.charts-row{grid-template-columns:1fr 1fr;}.charts-row{grid-template-columns:1fr;}main{padding:18px;}}
+</style>
+</head>
+<body>
+<video id="bg-video" autoplay muted loop playsinline>
+  <source src="https://raw.githubusercontent.com/projectcentreai-ux/Ellectra-projects/main/47215-450995786.mp4" type="video/mp4"/>
+</video>
+<div class="bg-overlay"></div>
+
+<div class="app">
+  <header>
+    <div class="header-left">
+      <div class="logo-wrap">
+        <img src="https://raw.githubusercontent.com/projectcentreai-ux/Ellectra-projects/main/Ellectra_w01wap%20(2)%20(1)%20logo.png" alt="Ellectra" onerror="this.style.display='none'"/>
+      </div>
+      <div class="brand-text">
+        <h1>Ellectra</h1>
+        <p>Power Intelligence</p>
+      </div>
+    </div>
+    <nav class="nav-links">
+      <a href="index.html">Dashboard</a>
+      <a href="stat.html">Statistics</a>
+      <a href="3dprinter.html" class="active">3D Printer</a>
+    </nav>
+  </header>
+
+  <div class="conn-bar">
+    <div class="dot" id="mqtt-dot"></div>
+    <span id="mqtt-status">Connecting…</span>
+    <span style="margin-left:8px;" id="data-source"></span>
+    <span style="margin-left:auto;font-family:'Orbitron',monospace;font-size:0.7rem;" id="clock"></span>
+  </div>
+
+  <main>
+    <div>
+      <div class="page-title">3D <span>Printer</span> Monitor</div>
+      <div style="font-size:0.75rem;color:var(--sub);margin-top:4px;letter-spacing:1px;">
+        GPIO 18 button · Relay 2 (GPIO 27) · Feedback GPIO 23 · Session energy from ESP32
+      </div>
+    </div>
+
+    <!-- Status Banner -->
+    <div class="status-banner idle" id="status-banner">
+      <div class="status-left">
+        <h2 id="banner-title">Printer Idle</h2>
+        <p id="banner-sub">Press the physical button (GPIO 18) on the ESP32 to start a print session.</p>
+        <div style="margin-top:12px;display:flex;gap:10px;">
+          <button class="btn btn-print" onclick="manualStart()">Manual Start</button>
+          <button class="btn btn-stop" onclick="manualStop()" id="stop-btn" style="display:none;">Stop Session</button>
+          <button class="btn btn-outline" onclick="window.location='stat.html'">All Stats</button>
+        </div>
+      </div>
+      <div class="print-icon" id="print-icon">🖨</div>
+    </div>
+
+    <!-- Timer -->
+    <div class="timer-big idle" id="session-timer">00:00:00</div>
+
+    <!-- Live Metrics -->
+    <div class="metrics-row">
+      <div class="metric-card">
+        <div class="metric-label">Live Voltage</div>
+        <div class="metric-val" id="d-voltage" style="color:#00f5c4;">—</div>
+        <div class="metric-unit">Volts</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Live Current</div>
+        <div class="metric-val" id="d-current" style="color:#7b61ff;">—</div>
+        <div class="metric-unit">Amperes</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Live Power</div>
+        <div class="metric-val" id="d-power" style="color:#ffd166;">—</div>
+        <div class="metric-unit">Watts</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Session Energy</div>
+        <div class="metric-val" id="d-energy" style="color:#ff8c00;">0.000</div>
+        <div class="metric-unit">Wh this session</div>
+      </div>
+    </div>
+
+    <!-- Session Stats -->
+    <div class="session-grid">
+      <div class="card">
+        <h3>Session Summary</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px;">
+          <div><div style="font-size:0.62rem;color:var(--sub);margin-bottom:4px;">Start time</div><div id="sess-start" style="font-size:0.85rem;font-family:'Orbitron',monospace;">—</div></div>
+          <div><div style="font-size:0.62rem;color:var(--sub);margin-bottom:4px;">Duration</div><div id="sess-dur" style="font-size:0.85rem;font-family:'Orbitron',monospace;color:var(--print);">—</div></div>
+          <div><div style="font-size:0.62rem;color:var(--sub);margin-bottom:4px;">Avg Power (ESP32)</div><div id="sess-avgp" style="font-size:0.85rem;font-family:'Orbitron',monospace;color:var(--warn);">—</div></div>
+          <div><div style="font-size:0.62rem;color:var(--sub);margin-bottom:4px;">Peak Power (ESP32)</div><div id="sess-maxp" style="font-size:0.85rem;font-family:'Orbitron',monospace;color:var(--danger);">—</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Relay 2 Feedback (GPIO 23)</h3>
+        <div style="text-align:center;padding:10px 0;">
+          <div style="font-size:3rem;" id="fb-icon">⚫</div>
+          <div id="fb-label" style="font-size:0.75rem;color:var(--sub);margin-top:8px;">GPIO 23: —</div>
+          <div id="relay2-state" style="font-family:'Orbitron',monospace;font-size:1rem;margin-top:6px;color:#333;">INACTIVE</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Print Sessions Total</h3>
+        <div style="text-align:center;padding:10px 0;">
+          <div style="font-family:'Orbitron',monospace;font-size:2rem;color:var(--accent);" id="total-sessions">0</div>
+          <div style="font-size:0.62rem;color:var(--sub);margin-top:6px;">completed sessions</div>
+          <div style="margin-top:12px;font-size:0.8rem;color:var(--sub);">Total energy: <span style="color:var(--print);font-weight:600;" id="total-energy-all">0.00</span> Wh</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="charts-row">
+      <div class="card">
+        <h3>Power trend — current session</h3>
+        <canvas id="sessionChart" height="200"></canvas>
+      </div>
+      <div class="card">
+        <h3>Sessions comparison (Wh)</h3>
+        <canvas id="sessionsBar" height="200"></canvas>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="card">
+      <h3>Print Session History</h3>
+      <div style="display:flex;gap:8px;margin-bottom:14px;">
+        <button class="btn btn-outline" onclick="clearHistory()" style="font-size:0.6rem;padding:6px 14px;color:#ff4d6d;border-color:#ff4d6d;">Clear History</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="hist-table">
+          <thead>
+            <tr><th>#</th><th>Start</th><th>Duration</th><th>Avg W</th><th>Peak W</th><th>Energy Wh</th><th>Relay 2</th></tr>
+          </thead>
+          <tbody id="hist-body">
+            <tr><td colspan="7" style="color:var(--sub);text-align:center;padding:24px;">No sessions recorded yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <span>Ellectra Power Intelligence &copy; 2025 · omroboticsautomation</span>
+    <span>GPIO 18 start · GPIO 27 relay · GPIO 23 feedback · WSS:8084</span>
+  </footer>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════
+//  CONFIG — matches ESP32 sketch exactly
+// ═══════════════════════════════════════════════════
+const BROKER   = 'wss://na45ffa4.ala.asia-southeast1.emqxsl.com:8084/mqtt';
+const USERNAME = 'Omroboticsautomation';
+const PASSWORD = '12345678';
+
+let mqttClient;
+
+function connectMQTT() {
+  mqttClient = mqtt.connect(BROKER, {
+    clientId: 'ellectra-3dp-' + Math.random().toString(16).substr(2,8),
+    username: USERNAME, password: PASSWORD,
+    clean: true, reconnectPeriod: 4000, connectTimeout: 12000
+  });
+  mqttClient.on('connect', () => {
+    document.getElementById('mqtt-dot').className = 'dot on';
+    document.getElementById('mqtt-status').textContent = 'Connected';
+    mqttClient.subscribe(['autoforshop/#']);
+  });
+  mqttClient.on('error', e => {
+    document.getElementById('mqtt-dot').className = 'dot err';
+    document.getElementById('mqtt-status').textContent = 'Error: ' + e.message;
+  });
+  mqttClient.on('offline', () => {
+    document.getElementById('mqtt-dot').className = 'dot';
+    document.getElementById('mqtt-status').textContent = 'Reconnecting…';
+  });
+  mqttClient.on('message', (topic, payload) => handleMsg(topic, payload.toString()));
+}
+connectMQTT();
+
+// ═══════════════════════════════════════════════════
+//  SESSION STATE
+// ═══════════════════════════════════════════════════
+let sessionActive = false, sessionStart = null;
+let sessionPowers = [], sessionPeakPower = 0;
+let sessionTimer  = null;
+// Track whether session data is coming from ESP32 JSON or calculated locally
+let espSessionData = false;
+
+function handleMsg(topic, msg) {
+  // Primary: full JSON packet from ESP32
+  if (topic === 'autoforshop/pzem/data') {
+    try {
+      const d = JSON.parse(msg);
+      if (d.voltage !== undefined) updateReadings(d);
+      // Session data from ESP32 (authoritative)
+      if (d.printing !== undefined) {
+        const active = d.printing === true || d.printing === 'true';
+        if (active && !sessionActive) startSession(true); // true = from ESP
+        if (!active && sessionActive) stopSession(true);
+      }
+      if (d.sess_avg_w  !== undefined) { document.getElementById('sess-avgp').textContent = parseFloat(d.sess_avg_w).toFixed(1)  + ' W'; espSessionData = true; }
+      if (d.sess_peak_w !== undefined)   document.getElementById('sess-maxp').textContent = parseFloat(d.sess_peak_w).toFixed(1) + ' W';
+      if (d.sess_wh     !== undefined)   document.getElementById('d-energy').textContent  = parseFloat(d.sess_wh).toFixed(3);
+      if (d.sess_sec    !== undefined && espSessionData) {
+        const sec = parseInt(d.sess_sec);
+        const hms = fmtSec(sec);
+        document.getElementById('session-timer').textContent = hms;
+        document.getElementById('sess-dur').textContent = hms;
+      }
+    } catch(e) {}
+    return;
+  }
+
+  // Individual topics (fallback)
+  if (topic.endsWith('/voltage')) document.getElementById('d-voltage').textContent = parseFloat(msg).toFixed(1);
+  if (topic.endsWith('/current')) document.getElementById('d-current').textContent = parseFloat(msg).toFixed(3);
+  if (topic.endsWith('/power')) {
+    const p = parseFloat(msg);
+    document.getElementById('d-power').textContent = p.toFixed(1);
+    if (sessionActive) { sessionPowers.push(p); if (p > sessionPeakPower) sessionPeakPower = p; pushSessionChart(p); }
+  }
+
+  // 3D printer status — from GPIO 18 button on ESP32
+  if (topic === 'autoforshop/3dprinter/status') {
+    const active = msg.trim().toLowerCase() === 'printing';
+    if (active && !sessionActive) startSession(false);
+    if (!active && sessionActive) stopSession(true);
+  }
+
+  // Relay 2 feedback (GPIO 23)
+  if (topic === 'autoforshop/feedback/2') {
+    const on = msg.trim() === '1' || msg.trim().toLowerCase() === 'on';
+    document.getElementById('fb-icon').textContent    = on ? '🟢' : '⚫';
+    document.getElementById('fb-label').textContent   = 'GPIO 23: ' + (on ? 'HIGH' : 'LOW');
+    document.getElementById('relay2-state').textContent = on ? 'ACTIVE' : 'INACTIVE';
+    document.getElementById('relay2-state').style.color = on ? 'var(--accent)' : '#333';
+  }
+}
+
+function updateReadings(d) {
+  if (d.voltage) document.getElementById('d-voltage').textContent = parseFloat(d.voltage).toFixed(1);
+  if (d.current) document.getElementById('d-current').textContent = parseFloat(d.current).toFixed(3);
+  if (d.power) {
+    const p = parseFloat(d.power);
+    document.getElementById('d-power').textContent = p.toFixed(1);
+    if (sessionActive && !espSessionData) {
+      sessionPowers.push(p);
+      if (p > sessionPeakPower) sessionPeakPower = p;
+      pushSessionChart(p);
+    } else if (sessionActive) {
+      pushSessionChart(p);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  SESSION MANAGEMENT
+// ═══════════════════════════════════════════════════
+function startSession(fromEsp) {
+  sessionActive     = true;
+  sessionStart      = Date.now();
+  sessionPowers     = [];
+  sessionPeakPower  = 0;
+  espSessionData    = fromEsp;
+
+  document.getElementById('status-banner').className    = 'status-banner printing';
+  document.getElementById('banner-title').textContent   = '🖨 Printing in Progress…';
+  document.getElementById('banner-sub').textContent     = 'Session started at ' + new Date().toLocaleTimeString();
+  document.getElementById('print-icon').className       = 'print-icon printing-anim';
+  document.getElementById('stop-btn').style.display     = '';
+  document.getElementById('session-timer').className    = 'timer-big';
+  document.getElementById('sess-start').textContent     = new Date().toLocaleTimeString();
+
+  if (!fromEsp) {
+    // Only run local timer when ESP32 is not supplying session data
+    sessionTimer = setInterval(tickSession, 1000);
+  }
+}
+
+function stopSession(saveToHistory) {
+  sessionActive = false;
+  espSessionData = false;
+  if (sessionTimer) { clearInterval(sessionTimer); sessionTimer = null; }
+
+  document.getElementById('status-banner').className  = 'status-banner idle';
+  document.getElementById('banner-title').textContent = 'Printer Idle';
+  document.getElementById('banner-sub').textContent   = 'Session complete. Press GPIO 18 button to start a new session.';
+  document.getElementById('print-icon').className     = 'print-icon';
+  document.getElementById('stop-btn').style.display   = 'none';
+  document.getElementById('session-timer').className  = 'timer-big idle';
+
+  if (saveToHistory && sessionPowers.length > 0) {
+    const dur    = (Date.now() - sessionStart) / 1000;
+    const avgP   = sessionPowers.reduce((a,v) => a+v, 0) / sessionPowers.length;
+    const energy = avgP * (dur / 3600);
+    // Also read from ESP-supplied values if available
+    const espAvg  = parseFloat(document.getElementById('sess-avgp').textContent) || avgP;
+    const espPeak = parseFloat(document.getElementById('sess-maxp').textContent) || sessionPeakPower;
+    const espWh   = parseFloat(document.getElementById('d-energy').textContent)  || energy;
+
+    const sessions = JSON.parse(localStorage.getItem('ellectra_3d_sessions') || '[]');
+    sessions.push({
+      start  : sessionStart,
+      dur    : Math.round(dur),
+      avgP   : espAvg.toFixed(1),
+      maxP   : espPeak.toFixed(1),
+      energy : espWh.toFixed(3),
+      relay  : true
+    });
+    if (sessions.length > 200) sessions.splice(0, sessions.length - 200);
+    localStorage.setItem('ellectra_3d_sessions', JSON.stringify(sessions));
+    renderHistory();
+    renderSessionsBar();
+  }
+
+  sessionStart  = null;
+  sessionPowers = [];
+  document.getElementById('d-energy').textContent    = '0.000';
+  document.getElementById('sess-avgp').textContent   = '—';
+  document.getElementById('sess-maxp').textContent   = '—';
+  document.getElementById('sess-dur').textContent    = '—';
+  document.getElementById('session-timer').textContent = '00:00:00';
+}
+
+function manualStart() {
+  startSession(false);
+  if (mqttClient && mqttClient.connected)
+    mqttClient.publish('autoforshop/3dprinter/status', 'printing');
+}
+function manualStop() {
+  stopSession(true);
+  if (mqttClient && mqttClient.connected)
+    mqttClient.publish('autoforshop/3dprinter/status', 'idle');
+}
+
+// Local tick — only used when ESP32 session data is NOT being received
+function tickSession() {
+  if (!sessionStart) return;
+  const sec  = Math.floor((Date.now() - sessionStart) / 1000);
+  const hms  = fmtSec(sec);
+  document.getElementById('session-timer').textContent = hms;
+  document.getElementById('sess-dur').textContent      = hms;
+  const avgP = sessionPowers.length ? sessionPowers.reduce((a,v) => a+v, 0) / sessionPowers.length : 0;
+  const energy = avgP * (sec / 3600);
+  document.getElementById('d-energy').textContent    = energy.toFixed(3);
+  document.getElementById('sess-avgp').textContent   = avgP.toFixed(1) + ' W';
+  document.getElementById('sess-maxp').textContent   = sessionPeakPower.toFixed(1) + ' W';
+}
+
+function fmtSec(sec) {
+  return String(Math.floor(sec/3600)).padStart(2,'0') + ':' +
+         String(Math.floor((sec%3600)/60)).padStart(2,'0') + ':' +
+         String(sec%60).padStart(2,'0');
+}
+
+// ═══════════════════════════════════════════════════
+//  SESSION POWER CHART
+// ═══════════════════════════════════════════════════
+const sessChartData = {
+  labels: [], datasets: [{
+    label:'Power W', data:[],
+    borderColor:'#ff8c00', backgroundColor:'rgba(255,140,0,0.1)',
+    tension:0.4, fill:true, pointRadius:1, borderWidth:2
+  }]
+};
+const sessionChart = new Chart(document.getElementById('sessionChart'), {
+  type:'line', data:sessChartData,
+  options:{
+    animation:false, responsive:true, maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      x:{ticks:{color:'#8baabb',font:{size:9},maxTicksLimit:8}, grid:{color:'rgba(255,255,255,0.04)'}},
+      y:{ticks:{color:'#8baabb',font:{size:9}}, grid:{color:'rgba(255,255,255,0.05)'}, beginAtZero:true}
+    }
+  }
+});
+let chartPt = 0;
+function pushSessionChart(val) {
+  chartPt++;
+  sessChartData.labels.push(chartPt);
+  sessChartData.datasets[0].data.push(val);
+  if (sessChartData.labels.length > 60) { sessChartData.labels.shift(); sessChartData.datasets[0].data.shift(); }
+  sessionChart.update();
+}
+
+// ═══════════════════════════════════════════════════
+//  SESSIONS BAR
+// ═══════════════════════════════════════════════════
+const sbData = {
+  labels:[], datasets:[{
+    label:'Wh', data:[],
+    backgroundColor:'rgba(123,97,255,0.6)', borderColor:'#7b61ff',
+    borderWidth:1, borderRadius:4
+  }]
+};
+const sessionsBar = new Chart(document.getElementById('sessionsBar'), {
+  type:'bar', data:sbData,
+  options:{
+    animation:false, responsive:true, maintainAspectRatio:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      x:{ticks:{color:'#8baabb',font:{size:9}}, grid:{color:'rgba(255,255,255,0.04)'}},
+      y:{ticks:{color:'#8baabb',font:{size:9}}, grid:{color:'rgba(255,255,255,0.05)'}, beginAtZero:true}
+    }
+  }
+});
+
+function renderSessionsBar() {
+  const sessions = JSON.parse(localStorage.getItem('ellectra_3d_sessions') || '[]');
+  const recent   = sessions.slice(-10);
+  sbData.labels  = recent.map((_,i) => 'S' + (sessions.length - recent.length + i + 1));
+  sbData.datasets[0].data = recent.map(s => parseFloat(s.energy) || 0);
+  sessionsBar.update();
+  const total = sessions.reduce((a,s) => a + (parseFloat(s.energy) || 0), 0);
+  document.getElementById('total-sessions').textContent    = sessions.length;
+  document.getElementById('total-energy-all').textContent  = total.toFixed(2);
+}
+
+// ═══════════════════════════════════════════════════
+//  HISTORY TABLE
+// ═══════════════════════════════════════════════════
+function renderHistory() {
+  const sessions = JSON.parse(localStorage.getItem('ellectra_3d_sessions') || '[]');
+  const tbody    = document.getElementById('hist-body');
+  if (!sessions.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--sub);text-align:center;padding:24px;">No sessions yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = [...sessions].reverse().slice(0,20).map((s,i) => {
+    const n   = sessions.length - i;
+    const dur = s.dur
+      ? fmtSec(s.dur)
+      : '—';
+    return `<tr>
+      <td style="color:var(--sub)">#${n}</td>
+      <td>${s.start ? new Date(s.start).toLocaleString() : '—'}</td>
+      <td style="color:var(--print);font-family:'Orbitron',monospace">${dur}</td>
+      <td style="color:var(--warn)">${s.avgP} W</td>
+      <td style="color:var(--danger)">${s.maxP} W</td>
+      <td style="color:var(--accent);font-weight:600">${s.energy} Wh</td>
+      <td style="color:${s.relay ? 'var(--accent)' : '#555'}">${s.relay ? '✓' : '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function clearHistory() {
+  if (confirm('Clear all session history? This cannot be undone.')) {
+    localStorage.removeItem('ellectra_3d_sessions');
+    renderHistory();
+    renderSessionsBar();
+  }
+}
+
+renderHistory();
+renderSessionsBar();
+
+// ═══════════════════════════════════════════════════
+//  CLOCK
+// ═══════════════════════════════════════════════════
+function updateClock() {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleString('en-IN', {timeZone:'Asia/Kolkata', hour12:false});
+}
+updateClock(); setInterval(updateClock, 1000);
+</script>
+</body>
+</html>
