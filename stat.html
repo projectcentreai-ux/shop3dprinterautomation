@@ -4,7 +4,6 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>Ellectra — Statistics</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;500;600&display=swap');
@@ -54,9 +53,6 @@
   .col-green{color:#4caf50;}
   .col-orange{color:#ff8c00;}
 
-  .charts-2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
-  .charts-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;}
-
   /* Table */
   .data-table{width:100%;border-collapse:collapse;font-size:0.78rem;}
   .data-table th{text-align:left;padding:10px 14px;font-size:0.65rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--sub);border-bottom:1px solid var(--glass-border);}
@@ -85,7 +81,7 @@
   @keyframes blink{0%,100%{opacity:1;}50%{opacity:0.3;}}
 
   footer{padding:14px 36px;background:rgba(5,8,20,0.9);border-top:1px solid var(--glass-border);display:flex;justify-content:space-between;font-size:0.68rem;color:var(--sub);}
-  @media(max-width:900px){.stat-grid{grid-template-columns:repeat(4,1fr);}.charts-2,.charts-3{grid-template-columns:1fr;}main{padding:18px;}}
+  @media(max-width:900px){.stat-grid{grid-template-columns:repeat(4,1fr);}main{padding:18px;}}
   @media(max-width:600px){.stat-grid{grid-template-columns:repeat(2,1fr);}}
 </style>
 </head>
@@ -161,34 +157,6 @@
       </div>
     </div>
 
-    <!-- Charts row 1 -->
-    <div class="charts-2">
-      <div class="card">
-        <h3>Power over Time (W)</h3>
-        <canvas id="powerTime" height="220"></canvas>
-      </div>
-      <div class="card">
-        <h3>Voltage over Time (V)</h3>
-        <canvas id="voltTime" height="220"></canvas>
-      </div>
-    </div>
-
-    <!-- Charts row 2 -->
-    <div class="charts-3">
-      <div class="card">
-        <h3>Energy per Hour (Wh)</h3>
-        <canvas id="hourBar" height="220"></canvas>
-      </div>
-      <div class="card">
-        <h3>Current over Time (A)</h3>
-        <canvas id="currDist" height="220"></canvas>
-      </div>
-      <div class="card">
-        <h3>Power Factor (cos φ)</h3>
-        <canvas id="pfChart" height="220"></canvas>
-      </div>
-    </div>
-
     <!-- Data Table — includes Freq and PF -->
     <div class="card">
       <h3>Recent Readings</h3>
@@ -253,7 +221,7 @@ function connectMQTT() {
       try {
         const d = JSON.parse(payload.toString());
         if (d.voltage !== undefined) {
-          storeReading(d);
+          storeReading(computePower(d));
           renderAll();  // refresh stats on every incoming packet
         }
       } catch(e) {}
@@ -263,37 +231,13 @@ function connectMQTT() {
 connectMQTT();
 
 // ═══════════════════════════════════════════════════
-//  CHARTS
+//  POWER — always computed as V × I, never read from ESP32
 // ═══════════════════════════════════════════════════
-const chartDefaults = {
-  animation:false, responsive:true, maintainAspectRatio:false,
-  plugins:{legend:{display:false}},
-  scales:{
-    x:{ticks:{color:'#8baabb',font:{size:9},maxTicksLimit:10}, grid:{color:'rgba(255,255,255,0.04)'}},
-    y:{ticks:{color:'#8baabb',font:{size:9}}, grid:{color:'rgba(255,255,255,0.05)'}, beginAtZero:true}
-  }
-};
-
-function mkChart(id, type, color, label) {
-  return new Chart(document.getElementById(id), {
-    type,
-    data:{labels:[], datasets:[{label, data:[],
-      borderColor:color,
-      backgroundColor:color.replace(')',',0.12)').replace('rgb','rgba'),
-      tension:0.4, fill:type==='line', pointRadius:1, borderWidth:1.5,
-      borderRadius: type==='bar' ? 4 : 0
-    }]},
-    options: JSON.parse(JSON.stringify(chartDefaults))
-  });
+function computePower(d) {
+  const v = parseFloat(d.voltage), i = parseFloat(d.current);
+  if (!isNaN(v) && !isNaN(i)) d.power = (v * i).toFixed(2);
+  return d;
 }
-
-const charts = {
-  powerTime: mkChart('powerTime','line','rgb(255,209,102)','Power W'),
-  voltTime:  mkChart('voltTime', 'line','rgb(0,245,196)',  'Voltage V'),
-  hourBar:   mkChart('hourBar',  'bar', 'rgb(123,97,255)', 'Wh'),
-  currDist:  mkChart('currDist', 'line','rgb(255,77,109)', 'Current A'),
-  pfChart:   mkChart('pfChart',  'line','rgb(255,140,0)',  'Power Factor'),
-};
 
 // ═══════════════════════════════════════════════════
 //  LOAD & FILTER
@@ -304,7 +248,7 @@ function getFiltered() {
   const now   = Date.now();
   const limits = { '24h':86400000, '7d':604800000, '30d':2592000000, 'all':Infinity };
   const limit = limits[range] || Infinity;
-  return all.filter(r => r.ts && (now - r.ts) <= limit);
+  return all.filter(r => r.ts && (now - r.ts) <= limit).map(computePower);
 }
 
 function renderAll() {
@@ -350,40 +294,8 @@ function renderAll() {
     setEl('s-3d-wh', print3dWh.toFixed(2));
   } catch(e) { setEl('s-3d-wh', '—'); }
 
-  // Sample down to 60 pts for time charts
-  const step    = Math.max(1, Math.floor(data.length / 60));
-  const sampled = data.filter((_,i) => i % step === 0);
-  const labels  = sampled.map(r =>
-    new Date(r.ts).toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit'}));
-
-  setChartData(charts.powerTime, labels, sampled.map(r => parseFloat(r.power)   || 0));
-  setChartData(charts.voltTime,  labels, sampled.map(r => parseFloat(r.voltage) || 0));
-  setChartData(charts.currDist,  labels, sampled.map(r => parseFloat(r.current) || 0));
-  setChartData(charts.pfChart,   labels, sampled.map(r => parseFloat(r.pf)      || 0));
-
-  // Hourly Wh bar
-  const hourMap = {};
-  data.forEach(r => {
-    if (!r.ts) return;
-    const h = new Date(r.ts).getHours();
-    if (!hourMap[h]) hourMap[h] = { wh:0, prev:null };
-    if (hourMap[h].prev !== null) {
-      hourMap[h].wh += (parseFloat(r.power) || 0) * ((r.ts - hourMap[h].prev) / 3600000);
-    }
-    hourMap[h].prev = r.ts;
-  });
-  const hLabels = [], hVals = [];
-  for (let i = 0; i < 24; i++) { hLabels.push(i+':00'); hVals.push((hourMap[i]?.wh || 0).toFixed(3)); }
-  setChartData(charts.hourBar, hLabels, hVals);
-
   renderTable(data.slice(-50).reverse());
   setEl('last-updated', 'Last updated: ' + new Date().toLocaleString());
-}
-
-function setChartData(chart, labels, data) {
-  chart.data.labels = labels;
-  chart.data.datasets[0].data = data;
-  chart.update();
 }
 
 // ═══════════════════════════════════════════════════
