@@ -365,7 +365,6 @@ function handleMessage(topic, msg) {
   // Individual topics (fallback)
   if (topic === TOPICS.VOLTAGE) setEl('val-voltage', parseFloat(msg).toFixed(1));
   if (topic === TOPICS.CURRENT) setEl('val-current', parseFloat(msg).toFixed(3));
-  if (topic === TOPICS.POWER)   { const p = parseFloat(msg); setEl('val-power', p.toFixed(1)); pushChart(p); }
   if (topic === TOPICS.ENERGY)  setEl('val-energy',  parseFloat(msg).toFixed(2));
 
   // Feedback pins
@@ -388,7 +387,12 @@ function handleMessage(topic, msg) {
 function applyData(d) {
   if (d.voltage !== undefined) setEl('val-voltage', parseFloat(d.voltage).toFixed(1));
   if (d.current !== undefined) setEl('val-current', parseFloat(d.current).toFixed(3));
-  if (d.power   !== undefined) { const p = parseFloat(d.power); setEl('val-power', p.toFixed(1)); pushChart(p); }
+  if (d.voltage !== undefined && d.current !== undefined) {
+    const p = parseFloat(d.voltage) * parseFloat(d.current);
+    d.power = p.toFixed(2);              // overwrite so storage/CSV use computed power too
+    setEl('val-power', p.toFixed(1));
+    pushChart(p);
+  }
   if (d.energy  !== undefined) setEl('val-energy',  parseFloat(d.energy).toFixed(2));
   if (d.freq    !== undefined) setEl('val-freq',    parseFloat(d.freq).toFixed(1));
   if (d.pf      !== undefined) setEl('val-pf',      parseFloat(d.pf).toFixed(2));
