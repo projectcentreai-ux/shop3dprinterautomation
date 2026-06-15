@@ -301,6 +301,17 @@ let espSessionData = false;
 let sessionTimer   = null;
 const sparkBuf = [];         // in-memory power samples for sparkline
 
+// Cache for standalone /voltage and /current topics (fallback path,
+// used when the combined pzem/data JSON packet isn't received).
+// Power is always computed as V × I, never read from an ESP /power topic.
+let lastVoltage = null, lastCurrent = null;
+function computeStandalonePower() {
+  if (lastVoltage === null || lastCurrent === null) return;
+  const p = lastVoltage * lastCurrent;
+  setEl('d-power', p.toFixed(1));
+  if (sessionActive) { sessionPowers.push(p); if(p>sessionPeakPower) sessionPeakPower=p; pushSpark(p); }
+}
+
 function saveState() {
   try {
     localStorage.setItem(LS_STATE, JSON.stringify({
@@ -332,8 +343,10 @@ function restoreState() {
       document.getElementById('sess-start').textContent   = new Date(sessionStart).toLocaleTimeString();
 
       // Resume local tick if ESP is not sending session data
-      if (!espSessionData) sessionTimer = setInterval(tickSession, 1000);
-      else tickSession(); // update display once
+      if (!espSessionData) {
+        if (sessionTimer) clearInterval(sessionTimer);
+        sessionTimer = setInterval(tickSession, 1000);
+      } else tickSession(); // update display once
     }
   } catch(e) {}
 }
@@ -349,7 +362,16 @@ function handleMsg(topic, msg) {
         if (active  && !sessionActive) startSession(true);
         if (!active && sessionActive)  stopSession(true);
       }
-      if (d.sess_avg_w  !== undefined) { setEl('sess-avgp', parseFloat(d.sess_avg_w).toFixed(1)+' W');  espSessionData=true; }
+      if (d.sess_avg_w  !== undefined) {
+        setEl('sess-avgp', parseFloat(d.sess_avg_w).toFixed(1)+' W');
+        if (!espSessionData) {
+          // ESP has started reporting session data — local tick would now
+          // race with ESP's sess_sec and cause the timer to flash/jump.
+          espSessionData = true;
+          if (sessionTimer) { clearInterval(sessionTimer); sessionTimer = null; }
+          saveState();
+        }
+      }
       if (d.sess_peak_w !== undefined)   setEl('sess-maxp', parseFloat(d.sess_peak_w).toFixed(1)+' W');
       if (d.sess_wh     !== undefined)   setEl('d-energy',  parseFloat(d.sess_wh).toFixed(3));
       if (d.sess_sec    !== undefined && espSessionData) {
@@ -360,13 +382,8 @@ function handleMsg(topic, msg) {
     } catch(e) {}
     return;
   }
-  if (topic.endsWith('/voltage')) setEl('d-voltage', parseFloat(msg).toFixed(1));
-  if (topic.endsWith('/current')) setEl('d-current', parseFloat(msg).toFixed(3));
-  if (topic.endsWith('/power')) {
-    const p=parseFloat(msg);
-    setEl('d-power', p.toFixed(1));
-    if (sessionActive) { sessionPowers.push(p); if(p>sessionPeakPower) sessionPeakPower=p; pushSpark(p); }
-  }
+  if (topic.endsWith('/voltage')) { lastVoltage = parseFloat(msg); setEl('d-voltage', lastVoltage.toFixed(1)); computeStandalonePower(); }
+  if (topic.endsWith('/current')) { lastCurrent = parseFloat(msg); setEl('d-current', lastCurrent.toFixed(3)); computeStandalonePower(); }
   if (topic === 'autoforshop/3dprinter/status') {
     const active = msg.trim().toLowerCase()==='printing';
     if (active  && !sessionActive) startSession(false);
@@ -382,10 +399,10 @@ function handleMsg(topic, msg) {
 }
 
 function updateReadings(d) {
-  if (d.voltage) setEl('d-voltage', parseFloat(d.voltage).toFixed(1));
-  if (d.current) setEl('d-current', parseFloat(d.current).toFixed(3));
-  if (d.power) {
-    const p=parseFloat(d.power);
+  if (d.voltage !== undefined) setEl('d-voltage', parseFloat(d.voltage).toFixed(1));
+  if (d.current !== undefined) setEl('d-current', parseFloat(d.current).toFixed(3));
+  if (d.voltage !== undefined && d.current !== undefined) {
+    const p = parseFloat(d.voltage) * parseFloat(d.current);
     setEl('d-power', p.toFixed(1));
     if (sessionActive) {
       if (!espSessionData) { sessionPowers.push(p); if(p>sessionPeakPower) sessionPeakPower=p; }
@@ -396,6 +413,13 @@ function updateReadings(d) {
 
 // ── SESSION MANAGEMENT ────────────────────────────
 function startSession(fromEsp) {
+  if (sessionActive) {           // already running — don't restart/reset the timer
+    espSessionData = fromEsp || espSessionData;
+    saveState();
+    return;
+  }
+  if (sessionTimer) { clearInterval(sessionTimer); sessionTimer = null; }
+
   sessionActive    = true;
   sessionStart     = Date.now();
   sessionPowers    = [];
@@ -417,6 +441,7 @@ function startSession(fromEsp) {
 }
 
 function stopSession(saveToHistory) {
+  if (!sessionActive) return;    // nothing running — ignore stray/duplicate stop
   sessionActive  = false;
   espSessionData = false;
   if (sessionTimer) { clearInterval(sessionTimer); sessionTimer=null; }
@@ -463,8 +488,10 @@ function manualStop() {
 function tickSession() {
   if (!sessionStart) return;
   const sec = Math.floor((Date.now()-sessionStart)/1000);
-  setEl('session-timer', fmtSec(sec));
-  setEl('sess-dur',      fmtSec(sec));
+  if (!espSessionData) {
+    setEl('session-timer', fmtSec(sec));
+    setEl('sess-dur',      fmtSec(sec));
+  }
   if (!espSessionData && sessionPowers.length) {
     const avgP   = sessionPowers.reduce((a,v)=>a+v,0)/sessionPowers.length;
     const energy = avgP*(sec/3600);
